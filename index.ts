@@ -28,17 +28,44 @@ app.get('/', (req: Request, res: Response) => {
         .card { background: white; border-radius: 16px; padding: 24px; margin-bottom: 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
         h2 { margin-top: 0; font-size: 1.5rem; }
         input, textarea, button { width: 100%; padding: 12px; margin: 8px 0; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; box-sizing: border-box; }
-        button { background-color: #3498db; color: white; border: none; font-weight: bold; cursor: pointer; }
+        button { background-color: #3498db; color: white; border: none; font-weight: bold; cursor: pointer; position: relative; }
         button:hover { background-color: #2980b9; }
+        button:disabled { background-color: #95a5a6; cursor: not-allowed; }
+        button.loading::after {
+            content: '';
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            top: 50%;
+            left: 50%;
+            margin-left: -8px;
+            margin-top: -8px;
+            border: 2px solid #ffffff;
+            border-radius: 50%;
+            border-top-color: transparent;
+            animation: spinner 0.8s linear infinite;
+        }
+        @keyframes spinner {
+            to { transform: rotate(360deg); }
+        }
         .result { margin-top: 16px; padding: 12px; background: #f0f7ff; border-radius: 8px; font-size: 14px; word-break: break-all; }
+        #qrcode-container { display: flex; align-items: center; gap: 12px; }
+        #qrcode { width: 100px; height: 100px; }
+        #qrcode img, #qrcode canvas { width: 100px; height: 100px; display: block; }
     </style>
+    <script src="https://cdn.bootcdn.net/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
 </head>
 <body>
+    <div class="card" id="qrcode-container">
+        <h2>📱 手机访问</h2>
+        <div id="qrcode"></div>
+    </div>
+
     <div class="card">
         <h2>📎 文件互传</h2>
         <form id="uploadForm" enctype="multipart/form-data">
             <input type="file" name="file" id="fileInput" multiple required>
-            <button type="submit">上传到电脑</button>
+            <button type="submit">发送</button>
         </form>
         <div id="uploadResult" class="result"></div>
         <div id="uploadFolder" class="result" style="background: #e8f5e9; font-family: monospace; word-break: break-all;"></div>
@@ -53,34 +80,50 @@ app.get('/', (req: Request, res: Response) => {
     <div class="card">
         <h2>📋 剪贴板同步</h2>
         <textarea id="clipText" rows="4" placeholder="在这里粘贴或查看文本..."></textarea>
-        <button id="syncToServer">📤 同步到电脑</button>
-        <button id="loadFromServer">📥 从电脑获取</button>
+        <button id="syncToServer">📤 发送</button>
+        <button id="loadFromServer">📥 获取</button>
         <div id="clipResult" class="result"></div>
     </div>
 
     <script>
         document.getElementById('uploadForm').onsubmit = async (e) => {
             e.preventDefault();
+            const submitBtn = e.target.querySelector('button[type="submit"]');
             const files = document.getElementById('fileInput').files;
             if (files.length === 0) return;
-            const formData = new FormData();
-            for (let i = 0; i < files.length; i++) {
-                formData.append('file', files[i]);
+            
+            // 禁用按钮并显示加载动画
+            submitBtn.disabled = true;
+            submitBtn.classList.add('loading');
+            submitBtn.textContent = '上传中...';
+            
+            try {
+                const formData = new FormData();
+                for (let i = 0; i < files.length; i++) {
+                    formData.append('file', files[i]);
+                }
+                const res = await fetch('/upload', { method: 'POST', body: formData });
+                const data = await res.json();
+                document.getElementById('uploadResult').innerHTML = '✅ ' + data.message;
+                if (data.folderPath) {
+                    document.getElementById('uploadFolder').innerHTML = '当前文件夹: ' + data.folderPath;
+                }
+                updateFileList();
+            } catch (err) {
+                document.getElementById('uploadResult').innerHTML = '❌ 上传失败';
+            } finally {
+                // 恢复按钮状态
+                submitBtn.disabled = false;
+                submitBtn.classList.remove('loading');
+                submitBtn.textContent = '上传到电脑';
             }
-            const res = await fetch('/upload', { method: 'POST', body: formData });
-            const data = await res.json();
-            document.getElementById('uploadResult').innerHTML = '[OK] ' + data.message;
-            if (data.folderPath) {
-                document.getElementById('uploadFolder').innerHTML = '当前文件夹: ' + data.folderPath;
-            }
-            updateFileList();
         };
 
         async function updateFileList() {
             const res = await fetch('/files');
             const data = await res.json();
             if (data.files.length === 0) {
-                document.getElementById('fileList').innerHTML = '[OK] 暂无文件';
+                document.getElementById('fileList').innerHTML = '📂 暂无文件';
                 return;
             }
             let html = '';
@@ -96,15 +139,34 @@ app.get('/', (req: Request, res: Response) => {
             const text = document.getElementById('clipText').value;
             const res = await fetch('/clipboard', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: text }) });
             const data = await res.json();
-            document.getElementById('clipResult').innerHTML = '[OK] ' + data.message;
+            document.getElementById('clipResult').innerHTML = '✅ ' + data.message;
         };
 
         document.getElementById('loadFromServer').onclick = async () => {
             const res = await fetch('/clipboard');
             const data = await res.json();
             document.getElementById('clipText').value = data.content;
-            document.getElementById('clipResult').innerHTML = '[OK] 已同步: ' + data.content.substring(0, 50);
+            document.getElementById('clipResult').innerHTML = '✅ 已同步: ' + data.content.substring(0, 50);
         };
+
+        async function generateQRCode() {
+            try {
+                const res = await fetch('/api/server-url');
+                const data = await res.json();
+                const url = data.url;
+
+                const qr = qrcode(0, 'L');
+                qr.addData(url);
+                qr.make();
+
+                const qrElement = document.getElementById('qrcode');
+                qrElement.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 0 });
+            } catch (e) {
+                console.log('QR code generation failed:', e);
+            }
+        }
+
+        generateQRCode();
     </script>
 </body>
 </html>
@@ -211,4 +273,17 @@ app.listen(PORT, '0.0.0.0', () => {
       }
     }
   }
+});
+
+app.get('/api/server-url', (req: Request, res: Response) => {
+  const interfaces = os.networkInterfaces();
+  for (const iface of Object.values(interfaces)) {
+    if (!iface) continue;
+    for (const addr of iface) {
+      if (addr.family === 'IPv4' && !addr.internal) {
+        return res.json({ url: `http://${addr.address}:${PORT}` });
+      }
+    }
+  }
+  return res.json({ url: `http://localhost:${PORT}` });
 });
